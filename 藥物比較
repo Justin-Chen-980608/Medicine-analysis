@@ -1,0 +1,208 @@
+import math
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib.figure import Figure
+from IPython.display import HTML
+
+plt.rcParams['font.family'] = 'Microsoft JhengHei'
+
+# ============================
+# 基本設定
+# ============================
+T0 = 39.0
+T_normal = 36.5
+
+T_max = 24.0
+dt = 1
+times = [i * dt for i in range(int(T_max / dt) + 1)]
+
+# ============================
+# 藥物參數設定
+# ============================
+drugs = {
+    "未用藥（自然恢復）": {
+        "type": "baseline",
+        "color": "gray",
+    },
+    "普拿疼 Acetaminophen": {
+        "type": "drug",
+        "color": "orange",
+        "ka": 1.3, # 起效約 1 小時
+        "ke": 0.28,# 半衰期約 2 小時
+        "dose": 1.0,
+        "potency": 1.0#退燒效果
+    },
+    "布洛芬 Ibuprofen": {
+        "type": "drug",
+        "color": "red",
+        "ka": 1.8,    # 快速吸收
+        "ke": 0.35,   # 半衰期約 2–2.7 小時
+        "dose": 1.0,
+        "potency": 1.25
+    },
+    "Naproxen": {
+        "type": "drug",
+        "color": "blue",
+        "ka": 0.8,
+        "ke": 0.058,
+        "dose": 1.0,
+        "potency": 1.0
+    }
+}
+
+
+# ============================
+# 免疫系統模型
+# ============================
+I0 = 1.0
+Ik = 0.08      # 發炎下降速度
+
+def immune_I(t):
+    # IL-1, TNF-α, PGE2 次方衰減模型
+    return I0 * math.exp(-Ik * (t ** 0.8))
+
+# 發炎會把 set-point 從 36.5°C 拉高
+a = 2.0
+
+def T_set_base(t):
+    return T_normal + a * immune_I(t)
+
+# 人體溫度追著 set-point 移動
+h = 0.18
+
+# 藥物抑制免疫反應強度（新加入！）
+beta = 0    # 0.6 代表藥物能抑制 60% 發炎效果
+
+# ============================
+# 開始模擬
+# ============================
+temp_curves = {}
+conc_curves = {}
+
+for name, info in drugs.items():
+    temps = []
+    concs = []
+
+    T = T0
+    if info["type"] == "drug":
+        G = info["dose"]
+        C = 0.0
+    else:
+        G = 0.0
+        C = 0.0
+
+    for t in times:
+
+        # 1. 原始免疫反應強度
+        I_raw = immune_I(t)
+
+        # 2. 藥物對免疫的抑制（只有 drug 有）
+        if info["type"] == "drug":
+            I_eff = I_raw * (1 - beta * C)
+            I_eff = max(I_eff, 0.0)
+        else:
+            I_eff = I_raw
+
+        # 3. 根據有效免疫反應 I_eff 來決定 set-point
+        Tset = T_normal + a * I_eff
+
+        # 4. 若為藥物，必須更新 G 與 C（吸收/代謝）
+        if info["type"] == "drug":
+            ka = info["ka"]#吸收速度
+            ke = info["ke"]#代謝速度
+
+
+            dG = -ka * G#胃裡的藥量變少（被吸收）
+            dC = ka * G - ke * C#吸收進來 − 代謝掉
+
+            G += dG * dt
+            C += dC * dt
+            
+            #避免負的
+            G = max(G, 0.0)
+            C = max(C, 0.0)
+
+            # 5. 藥物還會直接降低 set-point
+            potency = info["potency"]
+            Tset -= potency * C
+
+        # 6. 人體體溫追著 set-point 跑
+        dT = h * (Tset - T)
+        T += dT * dt
+
+        if T < T_normal:
+            T = T_normal
+
+        temps.append(T)
+        concs.append(C)
+
+    temp_curves[name] = temps
+    conc_curves[name] = concs
+
+# ============================
+# 動畫
+# ============================
+fig = Figure(figsize=(10, 6))
+fig.clf()
+ax = fig.add_subplot(111)
+
+def init():
+    ax.set_xlim(0, T_max)
+    ax.set_ylim(35.5, T0 + 0.5)
+    ax.set_xlabel("時間（小時）")
+    ax.set_ylabel("體溫（°C）")
+    ax.set_title("免疫 + 藥效（含免疫抑制）真實退燒模型")
+    ax.axhline(T_normal, color="black", linestyle="--", linewidth=1)
+    return []
+
+def animate(frame):
+    ax.clear()
+
+    ax.set_xlim(0, T_max)
+    ax.set_ylim(35.5, T0 + 0.5)
+    
+    ax.set_xlabel("時間（小時）")
+    ax.set_ylabel("體溫（°C）")
+    ax.set_title("免疫 + 藥效（含免疫抑制）真實退燒模型")
+
+    ax.axhline(T_normal, color="black", linestyle="--", linewidth=1)
+
+    t_now = times[frame]
+
+    for name, info in drugs.items():
+        color = info["color"]
+        ax.plot(times[:frame+1], temp_curves[name][:frame+1], color=color, label=name)
+        ax.plot(t_now, temp_curves[name][frame], marker='o', color=color, markersize=4)
+
+    ax.text(T_max * 0.98, T0 - 0.3, f"t = {t_now:.2f} 小時",
+            ha="right", va="top",
+            bbox=dict(facecolor='white', alpha=0.7))
+
+    ax.legend(loc="upper right", fontsize=8)
+    
+    # ======== 固定資訊欄（HUD） ========
+    info_text = "【當前狀態】\n"
+    info_text += f"時間：{t_now:.1f} 小時\n\n"
+
+    for name, info in drugs.items():
+        current_T = temp_curves[name][frame]
+        info_text += f"{name}: {current_T:.2f} °C\n"
+
+    # 左上角 HUD
+    ax.text(
+        0.02, 0.35,             # 固定位置（軸座標%), 左上角
+        info_text,
+        transform=ax.transAxes, # ❗ 使用 Axes 座標 = 不會隨著圖移動
+        fontsize=10,
+        va="top",
+        ha="left",
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="black")
+    )
+
+    
+    return []
+
+anim = animation.FuncAnimation(fig, animate, frames=len(times),init_func=init, interval=100, blit=False, save_count=len(times))
+
+HTML(anim.to_jshtml())
+
